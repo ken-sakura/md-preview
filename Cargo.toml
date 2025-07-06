@@ -4,13 +4,10 @@ version = "0.1.0"
 edition = "2024"
 
 [dependencies]
-# コマンドライン引数の解析
-clap = { version = "4.5.4", features = ["derive"] }
-
-# Markdownの解析
+# pulldown-cmarkとTUIライブラリはそのまま利用
 pulldown-cmark = "0.10.0"
-
-# TUI（ターミナルユーザーインターフェース）の構築
 ratatui = "0.26.2"
 crossterm = "0.27.0"
 
+# パスを正規化するために追加
+dunce = "1.0.4"
