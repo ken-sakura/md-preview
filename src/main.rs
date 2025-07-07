@@ -292,6 +292,7 @@ fn ui_explorer(f: &mut Frame, state: &mut ExplorerState) {
         .highlight_style(
             Style::default()
                 .bg(Color::LightGreen)
+                .fg(Color::DarkGray)
                 .add_modifier(Modifier::BOLD),
         )
         .highlight_symbol(">> ");
