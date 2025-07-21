@@ -12,14 +12,47 @@ use crossterm::{
     execute,
     terminal::{disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen},
 };
+// pulldown_cmarkからhtmlモジュールをインポート
 use pulldown_cmark::{
-    Alignment, CodeBlockKind, Event as MarkdownEvent, HeadingLevel, Options,
-    Parser as MarkdownParser, Tag, TagEnd,
+    html, Alignment as MarkdownAlignment, CodeBlockKind, Event as MarkdownEvent, HeadingLevel,
+    Options, Parser as MarkdownParser, Tag, TagEnd,
 };
 use ratatui::{
     prelude::*,
     widgets::{Block, Borders, List, ListItem, ListState, Paragraph, Wrap},
 };
+
+// --- 配色テーマ定義 ---
+struct ColorScheme {
+    bg: Color,
+    fg: Color,
+    selection_bg: Color,
+    selection_fg: Color,
+    comment: Color,
+    link: Color,
+    heading: Color,
+    code_bg: Color,
+    inline_code_bg: Color,
+    quote_fg: Color,
+    quote_border: Color,
+    hr: Color,
+}
+
+const GITHUB_DARK_THEME: ColorScheme = ColorScheme {
+    bg: Color::Rgb(13, 17, 23),         // #0d1117
+    fg: Color::Rgb(201, 209, 217),      // #c9d1d9
+    selection_bg: Color::Rgb(3, 34, 82), // A selection color
+    selection_fg: Color::Rgb(201, 209, 217),
+    comment: Color::Rgb(139, 148, 158), // #8b949e
+    link: Color::Rgb(88, 166, 255),     // #58a6ff
+    heading: Color::Rgb(88, 166, 255),  // Using link color for headings
+    code_bg: Color::Rgb(22, 27, 34),    // #161b22
+    inline_code_bg: Color::Rgb(40, 45, 53),
+    quote_fg: Color::Rgb(139, 148, 158), // #8b949e
+    quote_border: Color::Rgb(48, 54, 61), // #30363d
+    hr: Color::Rgb(33, 38, 45),         // #21262d
+};
+
 
 // --- アプリケーションの状態管理 ---
 
@@ -95,21 +128,24 @@ struct PreviewState {
     content: Text<'static>,
     scroll: u16,
     title: String,
+    char_count: usize,
 }
 
 impl PreviewState {
-    fn new(file_path: &Path) -> io::Result<Self> {
+    fn new(file_path: &Path, theme: &ColorScheme) -> io::Result<Self> {
         let original_markdown = fs::read_to_string(file_path)?;
+        let char_count = original_markdown.chars().count();
         let placeholder = "[[BR_TAG]]";
         let processed_markdown = original_markdown
             .replace("<br>", placeholder)
             .replace("<BR>", placeholder);
-        let content = render_markdown(&processed_markdown, placeholder);
+        let content = render_markdown(&processed_markdown, placeholder, theme);
 
         Ok(Self {
             content,
             scroll: 0,
             title: file_path.to_string_lossy().to_string(),
+            char_count,
         })
     }
 
@@ -131,11 +167,13 @@ impl PreviewState {
 // --- メインロジック ---
 
 fn main() -> Result<(), Box<dyn Error>> {
+    // TUIモードの起動
     let mut terminal = setup_terminal()?;
     let result = run(&mut terminal);
     restore_terminal()?;
 
     if let Err(err) = result {
+        // "quit"エラーはユーザーによる正常終了なので、エラーメッセージは表示しない
         if err.to_string() != "quit" {
             println!("エラーが発生しました: {}", err);
         }
@@ -147,13 +185,14 @@ fn run<B: Backend>(terminal: &mut Terminal<B>) -> io::Result<()> {
     let mut mode = AppMode::Explorer;
     let mut explorer_state = ExplorerState::new()?;
     let mut preview_state: Option<PreviewState> = None;
+    let theme = &GITHUB_DARK_THEME;
 
     loop {
         terminal.draw(|f| match mode {
-            AppMode::Explorer => ui_explorer(f, &mut explorer_state),
+            AppMode::Explorer => ui_explorer(f, &mut explorer_state, theme),
             AppMode::Preview => {
                 if let Some(state) = &mut preview_state {
-                    ui_preview(f, state);
+                    ui_preview(f, state, theme);
                 }
             }
         })?;
@@ -186,11 +225,53 @@ fn run<B: Backend>(terminal: &mut Terminal<B>) -> io::Result<()> {
                     if explorer_state.in_command_mode {
                         match key.code {
                             KeyCode::Enter => {
-                                if explorer_state.command_input == "q" {
-                                    return Err(io::Error::new(io::ErrorKind::Other, "quit"));
-                                }
+                                let command_text = explorer_state.command_input.trim().to_string();
                                 explorer_state.command_input.clear();
                                 explorer_state.in_command_mode = false;
+                                explorer_state.error_message = None; // コマンド実行時にエラーをクリア
+
+                                let parts: Vec<&str> = command_text.split_whitespace().collect();
+
+                                match parts.as_slice() {
+                                    ["q"] => {
+                                        return Err(io::Error::new(io::ErrorKind::Other, "quit"));
+                                    }
+                                    ["hp", filename] => {
+                                        let file_path = explorer_state.current_path.join(filename);
+                                        if !file_path.is_file() {
+                                            explorer_state.error_message = Some(format!("ファイルが見つかりません: {}", filename));
+                                            continue;
+                                        }
+
+                                        match fs::read_to_string(&file_path) {
+                                            Ok(markdown_input) => {
+                                                // MarkdownをHTMLに変換
+                                                let parser = MarkdownParser::new(&markdown_input);
+                                                let mut html_output = String::new();
+                                                html::push_html(&mut html_output, parser);
+                                                
+                                                let char_count = html_output.chars().count();
+                                                let content = Text::from(html_output);
+                                                let title = format!("HTML Preview: {}", file_path.to_string_lossy());
+
+                                                preview_state = Some(PreviewState {
+                                                    content,
+                                                    scroll: 0,
+                                                    title,
+                                                    char_count,
+                                                });
+                                                mode = AppMode::Preview;
+                                            }
+                                            Err(e) => {
+                                                explorer_state.error_message = Some(format!("ファイル読み込みエラー: {}", e));
+                                            }
+                                        }
+                                    }
+                                    [] => {} // 空のコマンドは無視
+                                    _ => {
+                                        explorer_state.error_message = Some(format!("不明なコマンドです: {}", command_text));
+                                    }
+                                }
                             }
                             KeyCode::Char(c) => explorer_state.command_input.push(c),
                             KeyCode::Backspace => {
@@ -203,6 +284,7 @@ fn run<B: Backend>(terminal: &mut Terminal<B>) -> io::Result<()> {
                             _ => {}
                         }
                     } else {
+                        explorer_state.error_message = None; // 操作時にエラーをクリア
                         match key.code {
                             KeyCode::Char(':') => {
                                 explorer_state.in_command_mode = true;
@@ -224,7 +306,7 @@ fn run<B: Backend>(terminal: &mut Terminal<B>) -> io::Result<()> {
                                             explorer_state.load_entries()?;
                                         } else {
                                             if selected_path.extension().and_then(|s| s.to_str()) == Some("md") {
-                                                match PreviewState::new(&selected_path) {
+                                                match PreviewState::new(&selected_path, theme) {
                                                     Ok(state) => {
                                                         preview_state = Some(state);
                                                         mode = AppMode::Preview;
@@ -252,18 +334,16 @@ fn run<B: Backend>(terminal: &mut Terminal<B>) -> io::Result<()> {
 
 // --- UI描画 ---
 
-fn ui_explorer(f: &mut Frame, state: &mut ExplorerState) {
+fn ui_explorer(f: &mut Frame, state: &mut ExplorerState, theme: &ColorScheme) {
     let chunks = Layout::default()
         .direction(Direction::Vertical)
         .constraints([Constraint::Min(0), Constraint::Length(2)].as_ref())
         .split(f.size());
 
-    // ★最重要修正点: unwrap()を完全に排除
     let items: Vec<ListItem> = state
         .entries
         .iter()
         .map(|path| {
-            // path.file_name()がNoneの場合でもpanicせず、安全にデフォルト値("..")を使う
             let file_name = path
                 .file_name()
                 .map_or_else(|| "..".into(), |s| s.to_string_lossy());
@@ -275,9 +355,9 @@ fn ui_explorer(f: &mut Frame, state: &mut ExplorerState) {
             };
 
             let style = if path.is_dir() {
-                Style::default().fg(Color::Cyan)
+                Style::default().fg(theme.link)
             } else {
-                Style::default()
+                Style::default().fg(theme.fg)
             };
             ListItem::new(Span::styled(display_name, style))
         })
@@ -287,45 +367,59 @@ fn ui_explorer(f: &mut Frame, state: &mut ExplorerState) {
         .block(
             Block::default()
                 .borders(Borders::ALL)
-                .title(state.current_path.to_string_lossy().to_string()),
+                .title(state.current_path.to_string_lossy().to_string())
+                .style(Style::default().fg(theme.fg).bg(theme.bg)),
         )
         .highlight_style(
             Style::default()
-                .bg(Color::LightGreen)
-                .fg(Color::DarkGray)
+                .bg(theme.selection_bg)
+                .fg(theme.selection_fg)
                 .add_modifier(Modifier::BOLD),
         )
         .highlight_symbol(">> ");
 
     f.render_stateful_widget(list, chunks[0], &mut state.list_state);
 
+    let status_bar_style = Style::default().fg(theme.fg).bg(theme.bg);
     let status_text = if state.in_command_mode {
         format!(":{}", state.command_input)
     } else if let Some(err) = &state.error_message {
         err.clone()
     } else {
-        "j/k or ↓/↑: Move | Enter: Open | h or Backspace: Up | :q Enter: Quit".to_string()
+        "j/k or ↓/↑: Move | Enter: Open | h or Backspace: Up | :<command> Enter: Run".to_string()
     };
     let status_bar = Paragraph::new(status_text).style(if state.error_message.is_some() {
-        Style::default().fg(Color::Red)
+        status_bar_style.fg(Color::Red)
     } else {
-        Style::default()
+        status_bar_style
     });
 
     f.render_widget(status_bar, chunks[1]);
 }
 
-fn ui_preview(f: &mut Frame, state: &mut PreviewState) {
-    let area = f.size();
+fn ui_preview(f: &mut Frame, state: &mut PreviewState, theme: &ColorScheme) {
+    // Create a layout with a main area and a footer
+    let chunks = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([
+            Constraint::Min(0), // Main content
+            Constraint::Length(1), // Footer
+        ])
+        .split(f.size());
+
+    // Main content paragraph without a block/border
     let paragraph = Paragraph::new(state.content.clone())
-        .block(Block::default().borders(Borders::ALL).title(format!(
-            "Previewing: {} (Press 'q' to close)",
-            state.title
-        )))
-        .style(Style::default().fg(Color::White).bg(Color::Black))
+        .style(Style::default().fg(theme.fg).bg(theme.bg))
         .wrap(Wrap { trim: false })
         .scroll((state.scroll, 0));
-    f.render_widget(paragraph, area);
+    f.render_widget(paragraph, chunks[0]);
+
+    // Footer
+    let footer_text = format!("{} | {} chars | Press 'q' to close", state.title, state.char_count);
+    let footer = Paragraph::new(footer_text)
+        .style(Style::default().fg(theme.comment).bg(theme.bg))
+        .alignment(Alignment::Right);
+    f.render_widget(footer, chunks[1]);
 }
 
 // --- ターミナル設定 ---
@@ -345,12 +439,12 @@ fn restore_terminal() -> Result<(), Box<dyn Error>> {
 }
 
 // --- Markdownレンダリング ---
-fn render_markdown(markdown_input: &str, br_placeholder: &str) -> Text<'static> {
+fn render_markdown(markdown_input: &str, br_placeholder: &str, theme: &ColorScheme) -> Text<'static> {
     let mut lines: Vec<Line<'static>> = Vec::new();
     let mut current_spans: Vec<Span<'static>> = Vec::new();
-    let mut style_stack: Vec<Style> = vec![Style::default()];
+    let mut style_stack: Vec<Style> = vec![Style::default().fg(theme.fg)];
     let mut list_stack: Vec<u64> = Vec::new();
-    let mut table_alignments: Vec<Alignment> = Vec::new();
+    let mut table_alignments: Vec<MarkdownAlignment> = Vec::new();
     let mut in_table_header = false;
     let mut in_code_block = false;
 
@@ -365,23 +459,23 @@ fn render_markdown(markdown_input: &str, br_placeholder: &str) -> Text<'static> 
                             lines.push(Line::from(std::mem::take(&mut current_spans)));
                         }
                         lines.push(Line::default());
-                        let style =
-                            Style::default()
+                        let base_style = Style::default()
                                 .add_modifier(Modifier::BOLD)
-                                .fg(match level {
-                                    HeadingLevel::H1 => Color::LightRed,
-                                    HeadingLevel::H2 => Color::LightYellow,
-                                    _ => Color::LightCyan,
-                                });
+                                .fg(theme.heading);
+                        let style = if level >= HeadingLevel::H3 {
+                            base_style.add_modifier(Modifier::DIM)
+                        } else {
+                            base_style
+                        };
                         style_stack.push(style);
                     }
                     Tag::BlockQuote => {
                         if !current_spans.is_empty() {
                             lines.push(Line::from(std::mem::take(&mut current_spans)));
                         }
-                        let style = Style::default()
-                            .fg(Color::Gray)
-                            .add_modifier(Modifier::ITALIC);
+                        let style = Style::default().fg(theme.quote_fg);
+                        current_spans.push(Span::styled("▎".to_string(), Style::default().fg(theme.quote_border)));
+                        current_spans.push(Span::raw(" ".to_string()));
                         style_stack.push(style);
                     }
                     Tag::CodeBlock(kind) => {
@@ -394,38 +488,17 @@ fn render_markdown(markdown_input: &str, br_placeholder: &str) -> Text<'static> 
                             CodeBlockKind::Fenced(lang) => lang.into_string(),
                             CodeBlockKind::Indented => String::new(),
                         };
-                        let border_style = Style::default().fg(Color::DarkGray);
+                        let border_style = Style::default().fg(theme.comment);
                         lines.push(Line::from(vec![
                             Span::styled("┌─── ".to_string(), border_style),
                             Span::styled(lang, Style::default().fg(Color::Yellow)),
                         ]));
-                        style_stack.push(Style::default().bg(Color::Rgb(30, 30, 30)));
+                        style_stack.push(Style::default().bg(theme.code_bg));
                     }
                     Tag::Table(aligns) => {
                         if !current_spans.is_empty() {
                             lines.push(Line::from(std::mem::take(&mut current_spans)));
                         }
-                        let mut top_border =
-                            vec![Span::styled("┌".to_string(), Style::default().fg(Color::DarkGray))];
-                        for _ in 0..aligns.len() {
-                            top_border.push(Span::styled(
-                                "────────".to_string(),
-                                Style::default().fg(Color::DarkGray),
-                            ));
-                            top_border.push(Span::styled(
-                                "┬".to_string(),
-                                Style::default().fg(Color::DarkGray),
-                            ));
-                        }
-                        if !top_border.is_empty() {
-                            top_border.pop();
-                        }
-                        top_border.push(Span::styled(
-                            "┐".to_string(),
-                            Style::default().fg(Color::DarkGray),
-                        ));
-                        lines.push(Line::from(top_border));
-
                         table_alignments = aligns;
                     }
                     Tag::TableHead => {
@@ -433,7 +506,7 @@ fn render_markdown(markdown_input: &str, br_placeholder: &str) -> Text<'static> 
                     }
                     Tag::TableRow => {
                         current_spans
-                            .push(Span::styled("│ ".to_string(), Style::default().fg(Color::DarkGray)));
+                            .push(Span::styled("│ ".to_string(), Style::default().fg(theme.comment)));
                     }
                     Tag::TableCell => { /* No action needed */ }
                     Tag::List(start_num) => {
@@ -456,112 +529,79 @@ fn render_markdown(markdown_input: &str, br_placeholder: &str) -> Text<'static> 
                         };
                         current_spans.push(Span::raw(indent));
                         current_spans
-                            .push(Span::styled(marker, Style::default().fg(Color::LightMagenta)));
+                            .push(Span::styled(marker, Style::default().fg(theme.comment)));
                     }
                     Tag::Emphasis => {
-                        style_stack.push(current_style.add_modifier(Modifier::ITALIC))
+                        style_stack.push(current_style.add_modifier(Modifier::ITALIC));
                     }
-                    Tag::Strong => style_stack.push(current_style.add_modifier(Modifier::BOLD)),
+                    Tag::Strong => {
+                        style_stack.push(current_style.add_modifier(Modifier::BOLD));
+                    }
                     Tag::Strikethrough => {
-                        style_stack.push(current_style.add_modifier(Modifier::CROSSED_OUT))
+                        style_stack.push(current_style.add_modifier(Modifier::CROSSED_OUT));
                     }
-                    Tag::Link { .. } => style_stack
-                        .push(Style::default().fg(Color::Blue).add_modifier(Modifier::UNDERLINED)),
+                    Tag::Link { .. } => {
+                        style_stack
+                        .push(Style::default().fg(theme.link).add_modifier(Modifier::UNDERLINED));
+                    }
                     _ => {}
                 }
             }
-            MarkdownEvent::End(tag) => match tag {
-                TagEnd::Heading(_) | TagEnd::BlockQuote | TagEnd::Item => {
-                    if !current_spans.is_empty() {
-                        lines.push(Line::from(std::mem::take(&mut current_spans)));
+            MarkdownEvent::End(tag) => {
+                match tag {
+                    TagEnd::Heading(_) | TagEnd::BlockQuote | TagEnd::Item => {
+                        if !current_spans.is_empty() {
+                            lines.push(Line::from(std::mem::take(&mut current_spans)));
+                        }
+                        style_stack.pop();
                     }
-                    style_stack.pop();
-                }
-                TagEnd::CodeBlock => {
-                    in_code_block = false;
-                    lines.push(Line::from(Span::styled(
-                        "└──────────────────".to_string(),
-                        Style::default().fg(Color::DarkGray),
-                    )));
-                    lines.push(Line::default());
-                    style_stack.pop();
-                }
-                TagEnd::Table => {
-                    let mut bottom_border =
-                        vec![Span::styled("└".to_string(), Style::default().fg(Color::DarkGray))];
-                    for _ in 0..table_alignments.len() {
-                        bottom_border.push(Span::styled(
-                            "────────".to_string(),
-                            Style::default().fg(Color::DarkGray),
-                        ));
-                        bottom_border.push(Span::styled(
-                            "┴".to_string(),
-                            Style::default().fg(Color::DarkGray),
-                        ));
+                    TagEnd::CodeBlock => {
+                        in_code_block = false;
+                        lines.push(Line::from(Span::styled(
+                            "└──────────────────".to_string(),
+                            Style::default().fg(theme.comment),
+                        )));
+                        lines.push(Line::default());
+                        style_stack.pop();
                     }
-                    if !bottom_border.is_empty() {
-                        bottom_border.pop();
+                    TagEnd::Table => {
+                        table_alignments.clear();
+                        lines.push(Line::default());
                     }
-                    bottom_border
-                        .push(Span::styled("┘".to_string(), Style::default().fg(Color::DarkGray)));
-                    lines.push(Line::from(bottom_border));
-
-                    table_alignments.clear();
-                    lines.push(Line::default());
-                }
-                TagEnd::TableHead => {
-                    in_table_header = false;
-                    let mut separator_spans =
-                        vec![Span::styled("├".to_string(), Style::default().fg(Color::DarkGray))];
-                    for align in &table_alignments {
-                        let sep = match align {
-                            Alignment::Left => " :------- ",
-                            Alignment::Center => " :------: ",
-                            Alignment::Right => " -------: ",
-                            Alignment::None => " -------- ",
-                        };
-                        separator_spans
-                            .push(Span::styled(sep.to_string(), Style::default().fg(Color::DarkGray)));
-                        separator_spans
-                            .push(Span::styled("┼".to_string(), Style::default().fg(Color::DarkGray)));
+                    TagEnd::TableHead => {
+                        in_table_header = false;
                     }
-                    if !separator_spans.is_empty() {
-                        separator_spans.pop();
+                    TagEnd::TableRow => {
+                        if !current_spans.is_empty() {
+                            lines.push(Line::from(std::mem::take(&mut current_spans)));
+                        }
                     }
-                    separator_spans
-                        .push(Span::styled("┤".to_string(), Style::default().fg(Color::DarkGray)));
-                    lines.push(Line::from(separator_spans));
-                }
-                TagEnd::TableRow => {
-                    if !current_spans.is_empty() {
-                        lines.push(Line::from(std::mem::take(&mut current_spans)));
+                    TagEnd::TableCell => {
+                        current_spans.push(Span::styled(" │ ".to_string(), Style::default().fg(theme.comment)));
                     }
-                }
-                TagEnd::TableCell => {
-                    current_spans.push(Span::styled(" │ ".to_string(), Style::default().fg(Color::DarkGray)));
-                }
-                TagEnd::List(_) => {
-                    list_stack.pop();
-                    lines.push(Line::default());
-                }
-                TagEnd::Paragraph => {
-                    if !current_spans.is_empty() {
-                        lines.push(Line::from(std::mem::take(&mut current_spans)));
+                    TagEnd::List(_) => {
+                        list_stack.pop();
+                        lines.push(Line::default());
                     }
-                    lines.push(Line::default());
+                    TagEnd::Paragraph => {
+                        if !current_spans.is_empty() {
+                            lines.push(Line::from(std::mem::take(&mut current_spans)));
+                        }
+                        lines.push(Line::default());
+                    }
+                    TagEnd::Emphasis | TagEnd::Strong | TagEnd::Strikethrough | TagEnd::Link => {
+                        style_stack.pop();
+                    }
+                    _ => {}
                 }
-                TagEnd::Emphasis | TagEnd::Strong | TagEnd::Strikethrough | TagEnd::Link => {
-                    style_stack.pop();
-                }
-                _ => {}
-            },
+            }
             MarkdownEvent::Text(text) => {
                 let style = *style_stack.last().unwrap_or(&Style::default());
                 if in_code_block {
                     for line in text.lines() {
                         lines.push(Line::from(vec![
-                            Span::styled("│ ".to_string(), Style::default().fg(Color::DarkGray)),
-                            Span::styled(line.to_string(), style),
+                            Span::styled("│ ".to_string(), Style::default().fg(theme.comment)),
+                            Span::styled(line.to_string(), style.fg(theme.fg)),
                         ]));
                     }
                 } else {
@@ -570,7 +610,8 @@ fn render_markdown(markdown_input: &str, br_placeholder: &str) -> Text<'static> 
                     } else {
                         style
                     };
-                    if text.contains(br_placeholder) {
+
+                    if !br_placeholder.is_empty() && text.contains(br_placeholder) {
                         let mut last_pos = 0;
                         while let Some(placeholder_pos) = text[last_pos..].find(br_placeholder) {
                             let absolute_pos = last_pos + placeholder_pos;
@@ -578,8 +619,9 @@ fn render_markdown(markdown_input: &str, br_placeholder: &str) -> Text<'static> 
                             if !before.is_empty() {
                                 current_spans.push(Span::styled(before.to_string(), final_style));
                             }
-                            current_spans
-                                .push(Span::styled("<br>".to_string(), Style::default().fg(Color::Red)));
+                            if !current_spans.is_empty() {
+                                lines.push(Line::from(std::mem::take(&mut current_spans)));
+                            }
                             last_pos = absolute_pos + br_placeholder.len();
                         }
                         let remaining = &text[last_pos..];
@@ -592,25 +634,27 @@ fn render_markdown(markdown_input: &str, br_placeholder: &str) -> Text<'static> 
                 }
             }
             MarkdownEvent::Html(html) => {
-                current_spans.push(Span::raw(html.to_string()));
+                current_spans.push(Span::styled(html.to_string(), Style::default().fg(theme.comment)));
             }
             MarkdownEvent::Code(text) => {
-                let style = Style::default().fg(Color::Yellow).bg(Color::DarkGray);
-                current_spans.push(Span::styled(format!("`{}`", text), style));
+                let style = Style::default().fg(theme.fg).bg(theme.inline_code_bg);
+                current_spans.push(Span::styled(format!(" {} ", text), style));
             }
             MarkdownEvent::HardBreak => {
                 if !current_spans.is_empty() {
                     lines.push(Line::from(std::mem::take(&mut current_spans)));
                 }
             }
-            MarkdownEvent::SoftBreak => current_spans.push(Span::raw(" ".to_string())),
+            MarkdownEvent::SoftBreak => {
+                current_spans.push(Span::raw(" ".to_string()));
+            }
             MarkdownEvent::Rule => {
                 if !current_spans.is_empty() {
                     lines.push(Line::from(std::mem::take(&mut current_spans)));
                 }
                 lines.push(Line::from(Span::styled(
                     "─".repeat(80),
-                    Style::default().fg(Color::Gray),
+                    Style::default().fg(theme.hr),
                 )));
                 lines.push(Line::default());
             }

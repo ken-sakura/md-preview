@@ -1,5 +1,5 @@
 [package]
-name = "md-preview"
+name = "peek"
 version = "0.1.0"
 edition = "2024"
 
@@ -11,3 +11,4 @@ crossterm = "0.27.0"
 
 # パスを正規化するために追加
 dunce = "1.0.4"
+
