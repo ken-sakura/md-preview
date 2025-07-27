@@ -21,6 +21,7 @@ use ratatui::{
     prelude::*,
     widgets::{Block, Borders, List, ListItem, ListState, Paragraph, Wrap},
 };
+use opener;
 
 // --- 配色テーマ定義 ---
 struct ColorScheme {
@@ -249,7 +250,7 @@ fn run<B: Backend>(terminal: &mut Terminal<B>) -> io::Result<()> {
                                                 let parser = MarkdownParser::new(&markdown_input);
                                                 let mut html_output = String::new();
                                                 html::push_html(&mut html_output, parser);
-                                                
+
                                                 let char_count = html_output.chars().count();
                                                 let content = Text::from(html_output);
                                                 let title = format!("HTML Preview: {}", file_path.to_string_lossy());
@@ -264,6 +265,21 @@ fn run<B: Backend>(terminal: &mut Terminal<B>) -> io::Result<()> {
                                             }
                                             Err(e) => {
                                                 explorer_state.error_message = Some(format!("ファイル読み込みエラー: {}", e));
+                                            }
+                                        }
+                                    }
+                                    ["ob", filename] => {
+                                        let file_path = explorer_state.current_path.join(filename);
+
+                                        // ファイルの存在と拡張子をチェック
+                                        if !file_path.is_file() {
+                                            explorer_state.error_message = Some(format!("ファイルが見つかりません: {}", filename));
+                                        } else if file_path.extension().and_then(|s| s.to_str()) != Some("html") {
+                                            explorer_state.error_message = Some("HTMLファイルのみ開けます。".to_string());
+                                        } else {
+                                            // ブラウザで開く
+                                            if let Err(e) = opener::open(&file_path) {
+                                                explorer_state.error_message = Some(format!("ブラウザで開けませんでした: {}", e));
                                             }
                                         }
                                     }
@@ -297,7 +313,7 @@ fn run<B: Backend>(terminal: &mut Terminal<B>) -> io::Result<()> {
                                     explorer_state.load_entries()?;
                                 }
                             }
-                            KeyCode::Enter => {
+                             KeyCode::Right | KeyCode::Char('l') | KeyCode::Enter => {
                                 if let Some(selected_index) = explorer_state.list_state.selected() {
                                     if let Some(selected_path) = explorer_state.entries.get(selected_index) {
                                         let selected_path = selected_path.clone();
@@ -386,7 +402,7 @@ fn ui_explorer(f: &mut Frame, state: &mut ExplorerState, theme: &ColorScheme) {
     } else if let Some(err) = &state.error_message {
         err.clone()
     } else {
-        "j/k or ↓/↑: Move | Enter: Open | h or Backspace: Up | :<command> Enter: Run".to_string()
+        "j/k or ↓/↑: Move | l/Enter: Open | h: Up | :<command> Enter: Run".to_string()
     };
     let status_bar = Paragraph::new(status_text).style(if state.error_message.is_some() {
         status_bar_style.fg(Color::Red)
@@ -666,4 +682,3 @@ fn render_markdown(markdown_input: &str, br_placeholder: &str, theme: &ColorSche
     }
     Text::from(lines)
 }
-
