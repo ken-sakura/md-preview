@@ -268,6 +268,39 @@ fn run<B: Backend>(terminal: &mut Terminal<B>) -> io::Result<()> {
                                             }
                                         }
                                     }
+                                    ["cat", filename] => {
+                                        let file_path = explorer_state.current_path.join(filename);
+                                        if !file_path.is_file() {
+                                            explorer_state.error_message =
+                                                Some(format!("ファイルが見つかりません: {}", filename));
+                                            continue;
+                                        }
+
+                                        match fs::read_to_string(&file_path) {
+                                            Ok(file_content) => {
+                                                let char_count = file_content.chars().count();
+                                                let content = Text::from(file_content);
+                                                let title = format!(
+                                                    "Cat: {}",
+                                                    file_path.to_string_lossy()
+                                                );
+
+                                                preview_state = Some(PreviewState {
+                                                    content,
+                                                    scroll: 0,
+                                                    title,
+                                                    char_count,
+                                                });
+                                                mode = AppMode::Preview;
+                                            }
+                                            Err(e) => {
+                                                explorer_state.error_message = Some(format!(
+                                                    "ファイル読み込みエラー: {}",
+                                                    e
+                                                ));
+                                            }
+                                        }
+                                    }
                                     ["ob", filename] => {
                                         let file_path = explorer_state.current_path.join(filename);
 
