@@ -154,11 +154,11 @@ impl PreviewState {
         self.scroll = self.scroll.saturating_sub(1);
     }
 
-    fn scroll_down(&mut self, frame_height: u16) {
-        let max_scroll = self
-            .content
-            .height()
-            .saturating_sub(frame_height as usize) as u16;
+    // スクロールダウンのロジックを修正
+    fn scroll_down(&mut self) {
+        // コンテンツの高さから1を引いた値を最大スクロール位置とする
+        // これにより、画面の高さに関わらずコンテンツの最後までスクロールできる
+        let max_scroll = self.content.height().saturating_sub(1) as u16;
         if self.scroll < max_scroll {
             self.scroll = self.scroll.saturating_add(1);
         }
@@ -210,14 +210,14 @@ fn run<B: Backend>(terminal: &mut Terminal<B>) -> io::Result<()> {
             match mode {
                 AppMode::Preview => {
                     if let Some(state) = &mut preview_state {
-                        let frame_height = terminal.size()?.height;
                         match key.code {
                             KeyCode::Char('q') => {
                                 preview_state = None;
                                 mode = AppMode::Explorer;
                             }
                             KeyCode::Up | KeyCode::Char('k') => state.scroll_up(),
-                            KeyCode::Down | KeyCode::Char('j') => state.scroll_down(frame_height),
+                            // 修正したscroll_downを呼ぶ
+                            KeyCode::Down | KeyCode::Char('j') => state.scroll_down(),
                             _ => {}
                         }
                     }
